@@ -1,15 +1,16 @@
 # XRd Segment Routing Telemetry Stack
 
-Streaming telemetry and AI-assisted alerting for a Cisco IOS-XR Segment Routing topology, built for Cisco Live 2026.
+Streaming telemetry, dashboards and alerting for a Cisco IOS-XR Segment Routing topology, built for Cisco Live 2026.
 
 ## What this does
 
-Eight XRd routers running IOS-XR 25.3.1 stream gNMI telemetry (interfaces, ISIS adjacencies, BGP sessions, SR-TE paths) into a Grafana observability stack. When an alert fires — for example, an interface goes down and cascades into ISIS adjacency losses — a webhook triggers an AI agent ([sp_oncall](https://github.com/jillesca/sp_oncall)) that investigates the network state via [gNMIBuddy](https://github.com/jillesca/gNMIBuddy) and reports root cause.
+Eight XRd routers running IOS-XR 25.3.1 stream gNMI telemetry (interfaces, ISIS adjacencies, BGP sessions, SR-TE paths) into a Grafana observability stack. When an alert fires — for example, an interface goes down and cascades into ISIS adjacency losses — Alertmanager sends it to any HTTP webhook receiver you choose.
 
 ```text
 XRd 1-8 ──gNMI──► gnmic-ingestor ──► NATS JetStream ──► gnmic-emitter ──► Prometheus
 XRd 1-8 ──syslog──► Alloy (VM) ──► Loki
-Prometheus + Loki ──► Grafana ──► alert rules ──► webhook ──► sp_oncall (LangGraph)
+Prometheus ──► alert rules ──► Alertmanager ──► webhook receiver (any HTTP endpoint)
+Prometheus + Loki ──► Grafana (dashboards)
 ```
 
 ![summary](img/1-summary.png)
@@ -43,26 +44,16 @@ flowchart LR
     loki -->|logs| graf
 ```
 
-### Alert and AI response
+### Alert flow
 
 ```mermaid
 flowchart LR
-    graf["Grafana<br/>:3000"]
+    prom["Prometheus<br/>alert rules<br/>:9090"]
     am["Alertmanager<br/>:9093"]
-    wh["webhook-receiver<br/>:8080"]
+    wh["Webhook receiver<br/>any HTTP endpoint"]
 
-    subgraph ai["AI Investigation"]
-        sp["sp_oncall<br/>LangGraph"]
-        buddy["gNMIBuddy MCP"]
-    end
-
-    xrd["XRd devices<br/>10.10.20.101–108"]
-
-    graf -->|alert rules| am
+    prom -->|alerts| am
     am -->|"POST /alert"| wh
-    wh --> sp
-    sp <-->|gNMI queries| buddy
-    buddy -->|"gNMI :57400"| xrd
 ```
 
 ## Topology
@@ -100,11 +91,11 @@ XRd runs on a [Cisco DevNet sandbox](https://devnetsandbox.cisco.com/DevNet) VM 
 | `gnmic-emitter`    | NATS → Prometheus remote_write               |
 | `nats`             | JetStream message bus                        |
 | `prometheus`       | Metrics storage + alert evaluation           |
-| `alertmanager`     | Alert routing → webhook contact point        |
+| `alertmanager`     | Alert routing → webhook receiver             |
 | `grafana`          | Dashboards + unified alerting                |
-| `webhook-receiver` | FastAPI receiver → sp_oncall LangGraph agent |
 | `alloy`            | Syslog ingestion (VM only) → Loki            |
 | `loki`             | Log storage (VM only)                        |
+| `alert-echo`       | Optional test receiver, profile `echo`       |
 
 ## Access
 
@@ -116,11 +107,11 @@ URLs are for split mode (running on laptop). In full-VM mode replace `localhost`
 | `prometheus`       | <http://localhost:9090>            | Query UI + Targets at `/targets`           |
 | `alertmanager`     | <http://localhost:9093>            | Active alerts and silences                 |
 | `nats`             | <http://localhost:8222>            | Server info; `/jsz` for JetStream details  |
-| `webhook-receiver` | <http://localhost:8080/docs>       | FastAPI interactive docs; `/health` status |
 | `alloy`            | <http://10.10.20.11:12345>         | Alloy debug UI (VM only)                   |
 | `nats-exporter`    | <http://localhost:7777/metrics>    | Prometheus scrape endpoint (text)          |
 | `gnmic-ingestor`   | <http://localhost:9804/metrics>    | gnmic metrics endpoint (text)              |
 | `gnmic-emitter`    | <http://localhost:9806/metrics>    | gnmic metrics endpoint (text)              |
+| `alert-echo`       | <http://localhost:8081>            | Optional, profile `echo`; alerts in logs   |
 | `loki`             | <<http://10.10.20.15:3100/ready> > | API only — query via Grafana               |
 
 ## Deployment
@@ -153,6 +144,32 @@ See [docs/deployment.md](docs/deployment.md) for prerequisites and step-by-step 
 make help   # list all targets
 ```
 
+## Testing alerts without AI
+
+Alertmanager sends alerts to the URL in `WEBHOOK_RECEIVER_URL`
+(default `http://host.docker.internal:8080/alert`, a receiver on port 8080 of
+your machine). To see alerts without running any receiver, start the optional
+`alert-echo` container, which prints every request, body included, to its logs:
+
+```bash
+COMPOSE_PROFILES=echo WEBHOOK_RECEIVER_URL=http://alert-echo:8080/alert make up
+docker compose logs -f alert-echo   # or: podman compose logs -f alert-echo
+```
+
+Then trigger an alert, for example by shutting down an interface on `xrd-1`.
+Alertmanager groups alerts for
+`group_wait` (30s) before it sends them. You can also post a fake alert straight
+to Alertmanager:
+
+```bash
+curl -XPOST http://localhost:9093/api/v2/alerts -H 'Content-Type: application/json' \
+  -d '[{"labels":{"alertname":"XRdInterfaceDown","source":"xrd-1","event_type":"interface_state","severity":"critical"}}]'
+```
+
+[webhook.site](https://webhook.site) works as an optional hosted alternative.
+Payloads contain device names and IP addresses and go to a public third-party
+site, so only use it with lab data.
+
 ## Configure XRd syslog destination
 
 ```bash
@@ -165,8 +182,7 @@ ansible-playbook ansible-helper/xrd_apply_config.yaml -i ansible-helper/hosts
 
 | Project     | Repo                                                                              |
 | ----------- | --------------------------------------------------------------------------------- |
-| gNMIBuddy   | <https://github.com/jillesca/gNMIBuddy>                                           |
-| sp_oncall   | <https://github.com/jillesca/sp_oncall>                                           |
+| sp_oncall   | <https://github.com/jillesca/sp_oncall> — optional AI on-call companion; runs the webhook proxy, see its README for `make webhook` and the startup order |
 | XRd Sandbox | <https://github.com/CiscoDevNet/XRd-Sandbox/tree/main/topologies/segment-routing> |
 
 ## Acknowledgements
@@ -174,7 +190,3 @@ ansible-playbook ansible-helper/xrd_apply_config.yaml -i ansible-helper/hosts
 This project is built on top of [gnp-stack](https://github.com/gnp-stack/gnp-stack) — an excellent open-source gNMIc + NATS + Prometheus + Grafana telemetry stack. The original project provides a great foundation for vendor-agnostic streaming telemetry; this repo extends it for Cisco XRd / IOS-XR, adds Loki log correlation, Grafana alerting, and an AI-driven investigation agent.
 
 The network topology on the grafana dashboard is inspired by the [Nokia EDA Telemetry Lab](https://github.com/eda-labs/eda-telemetry-lab) that has some nice visualizations of a DC Fabric.
-
-## Notes
-
-Skills present in the project were used and are kept for development using [skills.sh](https://www.skills.sh/)
