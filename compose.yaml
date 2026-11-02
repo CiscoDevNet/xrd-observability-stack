@@ -83,12 +83,25 @@ services:
       - 9093:9093
     volumes:
       - ./alertmanager/alertmanager.yaml:/etc/alertmanager/alertmanager.yaml:ro
+    # Alertmanager does not expand environment variables in its config file, so
+    # the entrypoint writes WEBHOOK_RECEIVER_URL to a file that alertmanager.yaml
+    # reads through `url_file`. ($$ keeps compose from interpolating the script.)
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        printf '%s' "$$WEBHOOK_RECEIVER_URL" > /tmp/webhook_url
+        exec /bin/alertmanager "$$@"
+      - alertmanager
     command: >
       --config.file=/etc/alertmanager/alertmanager.yaml
       --web.listen-address=:9093
       --log.level=info
     environment:
-      - WEBHOOK_RECEIVER_URL=${WEBHOOK_RECEIVER_URL:-http://webhook-receiver:8080/alert}
+      - WEBHOOK_RECEIVER_URL=${WEBHOOK_RECEIVER_URL:-http://host.docker.internal:8080/alert}
+    # Lets the container reach a receiver on the host (Docker on Linux/Desktop, Podman)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - gnp-mgmt
     restart: unless-stopped
@@ -107,29 +120,18 @@ services:
       retries: 3
       start_period: 10s
 
-  webhook-receiver:
-    build: ./webhook
+  # Optional test receiver that prints every alert it gets (headers and body) to
+  # its logs. Enable with COMPOSE_PROFILES=echo and
+  # WEBHOOK_RECEIVER_URL=http://alert-echo:8080/alert, then:
+  #   docker compose logs -f alert-echo
+  alert-echo:
+    image: mendhak/http-https-echo:43
+    profiles:
+      - echo
     ports:
-      - 8080:8080
-    environment:
-      - LANGGRAPH_API_URL=${LANGGRAPH_API_URL:-http://host.docker.internal:2024}
-      - LANGGRAPH_ASSISTANT_ID=${LANGGRAPH_ASSISTANT_ID:-agent}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - 8081:8080 # 8080 on the host is left free for a webhook proxy
     networks:
       - gnp-mgmt
-    restart: unless-stopped
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')",
-        ]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
 
   grafana:
     image: grafana/grafana:12.3.5
