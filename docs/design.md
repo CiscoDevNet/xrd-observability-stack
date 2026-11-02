@@ -2,21 +2,16 @@
 
 ## Purpose
 
-This document is an implementation guide for AI agents. It describes all architectural decisions, file changes, acceptance criteria, and constraints needed to extend the gnp-stack project to support Cisco XRd devices running a Segment Routing topology, add Grafana Loki for log correlation, configure alerting, and integrate with an AI-driven network investigation system.
-
-**If you encounter a constraint not covered, document it in a `BLOCKERS.md` file at the repo root and stop.**
+This document describes the architectural decisions, file changes, acceptance criteria, and constraints needed to extend the gnp-stack project to support Cisco XRd devices running a Segment Routing topology, add Grafana Loki for log correlation, and configure alerting.
 
 ---
 
 ## Context and Existing Projects
 
-| Project           | Repo                                                                              | Role                                                                                     |
-| ----------------- | --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| gnp-stack         | this repo                                                                         | Telemetry stack: gNMIc + NATS + Prometheus + Grafana                                     |
-| gNMIBuddy         | <https://github.com/jillesca/gNMIBuddy>                                           | MCP tool: pulls structured data from XRd via gNMI                                        |
-| sp_oncall         | <https://github.com/jillesca/sp_oncall>                                           | LangGraph multi-agent graph: investigates network issues                                 |
-| XRd Sandbox       | <https://github.com/CiscoDevNet/XRd-Sandbox/tree/main/topologies/segment-routing> | XRd topology, configs, and sandbox setup                                                 |
-| Previous TIG demo | <https://github.com/jillesca/oncall-netops-tig-pyats-demo>                        | Prior art: TIG stack + ISIS alert → LangGraph (different topology, do not port directly) |
+| Project     | Repo                                                                              | Role                                                 |
+| ----------- | --------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| gnp-stack   | this repo                                                                         | Telemetry stack: gNMIc + NATS + Prometheus + Grafana |
+| XRd Sandbox | <https://github.com/CiscoDevNet/XRd-Sandbox/tree/main/topologies/segment-routing> | XRd topology, configs, and sandbox setup             |
 
 ---
 
@@ -88,11 +83,6 @@ XRd uses Docker macvlan networking (`ens160`, subnet `10.10.20.0/24`, gateway `1
 │  │  - Loki datasource → http://10.10.20.15:3100      │   │
 │  │  - Dashboard: xrd-sr-overview                     │   │
 │  │  - Alert rules → webhook contact point            │   │
-│  └──────────────────────┬───────────────────────────┘   │
-│                         │ webhook POST                   │
-│  ┌──────────────────────▼───────────────────────────┐   │
-│  │  sp_oncall (LangGraph + gNMIBuddy MCP)           │   │
-│  │  Webhook Receiver (FastAPI) [Phase 4]            │   │
 │  └──────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -109,15 +99,13 @@ XRd uses Docker macvlan networking (`ens160`, subnet `10.10.20.0/24`, gateway `1
 | Container engine            | Docker on VM, Podman on laptop; Makefile detects                                                                                | Author uses both environments                                                                                                                   |
 | Log ingestion               | Grafana Alloy (syslog receiver) → Loki                                                                                          | Real-time, native Grafana stack, push-based                                                                                                     |
 | Log collection method       | XRd pushes syslog to Alloy (UDP)                                                                                                | Pull-based gNMI log polling is not real-time enough for alert correlation                                                                       |
-| gNMI path model             | OpenConfig primary + XR native YANG for richer metrics                                                                          | OpenConfig confirmed working on XRd 25.3.1 via gNMIBuddy                                                                                        |
-| Alert scenario (primary)    | Interface down → ISIS adjacency cascade                                                                                         | Most compelling demo: one event, visible cascade, agents find root cause                                                                        |
-| Alert scenarios (secondary) | BGP session down, SR-TE path failure, vRR peer loss                                                                             | Implement if time allows; alert payload schema supports all                                                                                     |
-| Alert payload               | Minimal, generic schema (no node_role hardcoding)                                                                               | gNMIBuddy MCP determines device role dynamically; keeps payload extensible                                                                      |
+| gNMI path model             | OpenConfig primary + XR native YANG for richer metrics                                                                          | OpenConfig confirmed working on XRd 25.3.1                                                                                                      |
+| Alert scenario (primary)    | Interface down → ISIS adjacency cascade                                                                                         | Most compelling demo: one event, visible cascade                                                                                                |
+| Alert scenarios (secondary) | BGP session down, SR-TE path failure, vRR peer loss                                                                             | Implement if time allows                                                                                                                        |
 | Dashboards                  | New XRd dashboards in `grafana/dashboards/xrd/`; existing dashboards untouched                                                  | Preserves upstream gnp-stack dashboards; isolates XRd contribution                                                                              |
 | Dashboard layout            | Single-pane-of-glass, all rows expanded                                                                                         | Demo audience sees one screen; no navigation needed                                                                                             |
 | Container networking        | Dual-network: `gnp-mgmt` bridge (internal) + `segment-routing_mgmt` macvlan (XRd-facing)                                        | Avoids subnet conflict; gnmic-ingestor reaches XRd directly; Alloy receives syslog; Grafana accessible from laptop via VPN                      |
 | Environment switching       | Explicit Makefile targets: `make up` (laptop) / `make up-vm` (VM) using compose overrides                                       | Explicit over implicit; same codebase works on both machines without auto-detection magic                                                       |
-| Webhook receiver            | FastAPI (Phase 4, built last)                                                                                                   | Lowest risk; dashboards and alerting proven before integration                                                                                  |
 | Future NSO integration      | Out of scope for this document                                                                                                  | Author may add NSO + MCP for intended-state comparison after Cisco Live                                                                         |
 
 ---
@@ -171,7 +159,7 @@ See [deployment.md](deployment.md) for step-by-step instructions for each mode.
 - `10.10.20.254` — macvlan gateway
 - `10.10.20.10-19` — reserved for gnp-stack containers (configurable)
 
-**Validation the implementing agent must run after `make up`:**
+**Validation to run after `make up`:**
 
 ```bash
 # Confirm gnmic-ingestor can reach XRd devices directly
@@ -787,7 +775,7 @@ This is already present in the existing compose; the subfolder `xrd/` will be pi
 
 ### 2.7 `grafana/dashboards/xrd/xrd-sr-overview.json` — Dashboard
 
-Create the directory `grafana/dashboards/xrd/` and build a dashboard JSON with the following specification. The implementing agent must generate the full Grafana dashboard JSON.
+Create the directory `grafana/dashboards/xrd/` and build a dashboard JSON with the following specification.
 
 **Dashboard metadata:**
 
@@ -811,7 +799,7 @@ Create the directory `grafana/dashboards/xrd/` and build a dashboard JSON with t
 | BGP Sessions ESTABLISHED | `count(network_instance_protocol_bgp_neighbor_state_session_state == 1)` | green ≥1, red =0 |
 | BGP Sessions DOWN        | `count(network_instance_protocol_bgp_neighbor_state_session_state == 0)` | green =0, red ≥1 |
 
-> **Note to implementing agent**: gNMIc metric names are derived from the gNMI path with `/` replaced by `_` and `[key=*]` keys stripped or used as labels. Verify exact metric names from Prometheus after Phase 1 is complete using: `curl -s http://localhost:9090/api/v1/label/__name__/values | python3 -m json.tool`
+> **Note**: gNMIc metric names are derived from the gNMI path with `/` replaced by `_` and `[key=*]` keys stripped or used as labels. Verify exact metric names from Prometheus after Phase 1 is complete using: `curl -s http://localhost:9090/api/v1/label/__name__/values | python3 -m json.tool`
 
 #### Row 2: Interfaces
 
@@ -885,7 +873,7 @@ contactPoints:
         disableResolveMessage: false
 ```
 
-> `WEBHOOK_RECEIVER_URL` is an environment variable set in `compose.yaml` or a `.env` file. In Phase 3 (before the FastAPI receiver exists), point this to a request bin (e.g. <https://webhook.site>) for testing.
+> `WEBHOOK_RECEIVER_URL` is an environment variable set in `compose.yaml` or a `.env` file. For testing, point this to a request bin (e.g. <https://webhook.site>) or use the `alert-echo` container.
 
 Create `grafana/provisioning/alerting/xrd-alert-rules.yaml`:
 
@@ -1032,8 +1020,7 @@ Create `.env.example` at repo root:
 
 ```
 # URL where Grafana sends alert webhooks
-# In Phase 3: use https://webhook.site for testing
-# In Phase 4: use http://<laptop-ip>:8080/alert
+# Use https://webhook.site for testing
 WEBHOOK_RECEIVER_URL=https://webhook.site/your-test-id
 
 # Static IPs for gnp-stack containers on the XRd macvlan network (10.10.20.0/24)
@@ -1073,162 +1060,9 @@ Verify the Grafana webhook POST body contains:
 
 ---
 
-## Phase 4: Webhook Integration (FastAPI Receiver)
-
-**Goal**: Build a FastAPI service that receives Grafana webhooks, transforms them into the alert schema, and kicks off a LangGraph investigation thread in sp_oncall.
-
-**Done when**: Interface down on xrd-1 → Grafana fires → FastAPI receiver → sp_oncall agents investigate → report generated without human input.
-
-### 4.1 Alert payload schema
-
-The FastAPI receiver translates the Grafana native webhook body into this canonical schema before forwarding to sp_oncall:
-
-```json
-{
-  "alert_name": "XRd Interface Down",
-  "severity": "critical",
-  "timestamp": "2026-05-20T10:23:00Z",
-  "duration_seconds": 30,
-
-  "device": "xrd-1",
-
-  "event_type": "interface_state",
-  "affected_object": "GigabitEthernet0/0/0/0",
-  "affected_object_type": "interface",
-  "previous_state": "up",
-  "current_state": "down",
-
-  "protocol": "isis",
-  "network_instance": "default",
-  "neighbor_device": "xrd-3",
-
-  "metric_value": 0,
-  "threshold": 1
-}
-```
-
-**Field mapping from Grafana webhook → alert schema:**
-
-| Alert schema field     | Source in Grafana payload                                                        |
-| ---------------------- | -------------------------------------------------------------------------------- |
-| `alert_name`           | `alerts[0].labels.alertname`                                                     |
-| `severity`             | `alerts[0].labels.severity`                                                      |
-| `timestamp`            | `alerts[0].startsAt` (parse to RFC3339)                                          |
-| `duration_seconds`     | `(now - startsAt).seconds`                                                       |
-| `device`               | `alerts[0].labels.target`                                                        |
-| `event_type`           | `alerts[0].labels.event_type`                                                    |
-| `affected_object`      | `alerts[0].labels.name` (interface) or `alerts[0].labels.neighbor_address` (BGP) |
-| `affected_object_type` | `alerts[0].labels.affected_object_type`                                          |
-| `previous_state`       | hardcoded `"up"` for firing alerts                                               |
-| `current_state`        | hardcoded `"down"` for firing alerts                                             |
-| `protocol`             | `alerts[0].labels.protocol` (may be null)                                        |
-| `network_instance`     | `alerts[0].labels.network_instance` (may be null)                                |
-| `neighbor_device`      | `alerts[0].labels.neighbor_device` (may be null)                                 |
-| `metric_value`         | `alerts[0].values.B` or similar (depends on alert query)                         |
-| `threshold`            | hardcoded `1` for state-based alerts                                             |
-
-Fields that cannot be derived from the Grafana payload are `null`. The sp_oncall agents use gNMIBuddy MCP tools to fill in gaps (e.g. identifying the ISIS neighbor that was lost, the device role).
-
-### 4.2 FastAPI receiver
-
-Create a directory `webhook/` at the gnp-stack repo root. The receiver is a standalone FastAPI application.
-
-**File structure:**
-
-```
-webhook/
-├── main.py
-├── schema.py
-├── langgraph_client.py
-├── pyproject.toml
-└── Dockerfile
-```
-
-**`webhook/schema.py`** — Pydantic models:
-
-- `GrafanaAlert`: models the incoming Grafana webhook body
-- `NetworkAlert`: the canonical alert schema above
-
-**`webhook/main.py`** — FastAPI app:
-
-- `POST /alert` endpoint
-- Validates incoming Grafana webhook
-- Transforms to `NetworkAlert`
-- Calls `langgraph_client.trigger_investigation(alert)`
-- Returns `{"status": "accepted"}` immediately (do not wait for investigation)
-
-**`webhook/langgraph_client.py`** — sp_oncall integration:
-
-- Uses the LangGraph SDK (`langgraph_sdk`) to create a new thread and run
-- Thread input is the `NetworkAlert` as a dict
-- The sp_oncall graph entrypoint accepts this as its initial state
-- Connection: `LANGGRAPH_API_URL` env var (default `http://localhost:2024`)
-
-**`webhook/pyproject.toml`:**
-
-```toml
-[project]
-name = "xrd-webhook-receiver"
-version = "0.1.0"
-requires-python = ">=3.11"
-dependencies = [
-    "fastapi>=0.115.0",
-    "uvicorn[standard]>=0.32.0",
-    "langgraph-sdk>=0.1.0",
-    "pydantic>=2.0.0",
-]
-```
-
-**`compose.yaml`** — add webhook service:
-
-```yaml
-webhook-receiver:
-  build: ./webhook
-  ports:
-    - 8080:8080
-  environment:
-    - LANGGRAPH_API_URL=${LANGGRAPH_API_URL:-http://host.docker.internal:2024}
-  networks:
-    - gnp-mgmt
-```
-
-Update `WEBHOOK_RECEIVER_URL` in `.env`:
-
-```
-WEBHOOK_RECEIVER_URL=http://<laptop-ip>:8080/alert
-```
-
-> sp_oncall runs on the laptop. The `LANGGRAPH_API_URL` uses `host.docker.internal` to reach it from the container. On Linux (the VM), replace `host.docker.internal` with the host's actual IP (`172.17.0.1` or the gnp-mgmt gateway IP).
-
-### 4.3 Validation — Phase 4
-
-```bash
-# 1. Start sp_oncall on laptop (see sp_oncall README)
-make -C ~/sp_oncall run
-
-# 2. Start gnp-stack on VM with webhook receiver
-make up
-
-# 3. Update .env with real laptop IP
-echo "WEBHOOK_RECEIVER_URL=http://$(curl -s ifconfig.me):8080/alert" >> .env
-make restart
-
-# 4. Trigger the scenario
-ssh cisco@10.10.20.101 "conf t ; interface GigabitEthernet0/0/0/0 ; shutdown ; commit ; end"
-
-# 5. Watch sp_oncall LangGraph Studio for a new thread starting
-# Thread should show Input Validator → Planner → Executor → Assessor → Reporter
-# Final report should identify the interface failure and ISIS impact
-
-# 6. Restore
-ssh cisco@10.10.20.101 "conf t ; interface GigabitEthernet0/0/0/0 ; no shutdown ; commit ; end"
-```
-
----
-
 ## Appendix A: gNMI Path Reference
 
-All paths confirmed against IOS-XR 25.3.1 via gNMIBuddy unless marked _[to validate]_.
+All paths confirmed against IOS-XR 25.3.1 unless marked _[to validate]_.
 
 ### OpenConfig (primary)
 
@@ -1255,72 +1089,14 @@ All paths confirmed against IOS-XR 25.3.1 via gNMIBuddy unless marked _[to valid
 
 ---
 
-## Appendix B: Alert Payload Schema (canonical)
-
-```json
-{
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "NetworkAlert",
-  "type": "object",
-  "required": ["alert_name", "severity", "timestamp", "device", "event_type"],
-  "properties": {
-    "alert_name": { "type": "string" },
-    "severity": { "type": "string", "enum": ["critical", "warning", "info"] },
-    "timestamp": { "type": "string", "format": "date-time" },
-    "duration_seconds": { "type": ["integer", "null"] },
-    "device": {
-      "type": "string",
-      "description": "Device hostname as known to gNMIBuddy"
-    },
-    "event_type": {
-      "type": "string",
-      "enum": [
-        "interface_state",
-        "protocol_adjacency",
-        "bgp_session",
-        "sr_path",
-        "system_resource"
-      ]
-    },
-    "affected_object": {
-      "type": ["string", "null"],
-      "description": "Interface name, neighbor IP, policy name, etc."
-    },
-    "affected_object_type": {
-      "type": ["string", "null"],
-      "enum": [
-        "interface",
-        "isis_adjacency",
-        "bgp_neighbor",
-        "sr_policy",
-        "mpls_label",
-        null
-      ]
-    },
-    "previous_state": { "type": ["string", "null"] },
-    "current_state": { "type": ["string", "null"] },
-    "protocol": {
-      "type": ["string", "null"],
-      "enum": ["isis", "bgp", "mpls", "sr-te", "system", null]
-    },
-    "network_instance": { "type": ["string", "null"] },
-    "neighbor_device": { "type": ["string", "null"] },
-    "metric_value": { "type": ["number", "null"] },
-    "threshold": { "type": ["number", "null"] }
-  }
-}
-```
-
----
-
-## Appendix C: File Change Summary per Phase
+## Appendix B: File Change Summary per Phase
 
 | File                                                         | Phase | Action                                                |
 | ------------------------------------------------------------ | ----- | ----------------------------------------------------- |
 | `Makefile`                                                   | 1     | Create                                                |
 | `gnmic/gnmic-ingestor.yaml`                                  | 1     | Modify (add XRd subscriptions and output)             |
 | `gnmic/gnmic-emitter.yaml`                                   | 1     | Modify (add XRd input and processor)                  |
-| `compose.yaml`                                               | 2, 4  | Modify (add Loki + Grafana loki dep; webhook service) |
+| `compose.yaml`                                               | 2     | Modify (add Loki + Grafana loki dep)                  |
 | `compose.override.vm.yaml`                                   | 2     | Create (Alloy + macvlan networking for VM mode)       |
 | `loki/loki-config.yaml`                                      | 2     | Create                                                |
 | `alloy/config.alloy`                                         | 2     | Create                                                |
@@ -1331,22 +1107,13 @@ All paths confirmed against IOS-XR 25.3.1 via gNMIBuddy unless marked _[to valid
 | `grafana/provisioning/alerting/xrd-alert-rules.yaml`         | 3     | Create                                                |
 | `grafana/provisioning/alerting/xrd-notification-policy.yaml` | 3     | Create                                                |
 | `.env.example`                                               | 3     | Create                                                |
-| `webhook/main.py`                                            | 4     | Create                                                |
-| `webhook/schema.py`                                          | 4     | Create                                                |
-| `webhook/langgraph_client.py`                                | 4     | Create                                                |
-| `webhook/pyproject.toml`                                     | 4     | Create                                                |
-| `webhook/Dockerfile`                                         | 4     | Create                                                |
 
 ---
 
 ## References
 
-- gNMIBuddy (MCP tool for XRd): <https://github.com/jillesca/gNMIBuddy>
-- sp_oncall (LangGraph agents): <https://github.com/jillesca/sp_oncall>
 - XRd Sandbox topology: <https://github.com/CiscoDevNet/XRd-Sandbox/tree/main/topologies/segment-routing>
-- Previous TIG demo (prior art): <https://github.com/jillesca/oncall-netops-tig-pyats-demo>
 - gnp-stack upstream: this repo
 - gNMIc documentation: <https://gnmic.openconfig.net>
 - Grafana Alloy syslog: <https://grafana.com/docs/alloy/latest/reference/components/loki.source.syslog/>
-- LangGraph SDK: <https://langchain-ai.github.io/langgraph/cloud/reference/sdk/python_sdk_ref/>
 ````
