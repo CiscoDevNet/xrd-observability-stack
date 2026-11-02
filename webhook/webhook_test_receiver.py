@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# Copyright 2026 Cisco Systems, Inc. and its affiliates
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Minimal webhook receiver for Phase 3 testing.
 Listens on 0.0.0.0:8080, logs every POST body to stdout and to /tmp/webhook.log.
 """

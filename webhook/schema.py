@@ -1,3 +1,7 @@
+# Copyright 2026 Cisco Systems, Inc. and its affiliates
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Pydantic models for incoming Grafana webhook payloads and the canonical
 NetworkAlert schema passed to sp_oncall.
