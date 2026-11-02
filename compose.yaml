@@ -5,13 +5,6 @@ networks:
       config:
         - subnet: 192.168.60.0/24
 services:
-  # Troubleshooting container
-  # Uncomment to run it
-  # netshoot:
-  #   image: ghcr.io/nicolaka/netshoot:latest
-  #   networks:
-  #     - gnp-mgmt
-  #   command: "sleep 36000"
   gnmic-ingestor:
     image: ghcr.io/openconfig/gnmic:0.45.0
     ports:
