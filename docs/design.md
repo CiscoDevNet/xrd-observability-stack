@@ -873,7 +873,7 @@ contactPoints:
         disableResolveMessage: false
 ```
 
-> `WEBHOOK_RECEIVER_URL` is an environment variable set in `compose.yaml` or a `.env` file. In Phase 3 (before the FastAPI receiver exists), point this to a request bin (e.g. <https://webhook.site>) for testing.
+> `WEBHOOK_RECEIVER_URL` is an environment variable set in `compose.yaml` or a `.env` file. For testing, point this to a request bin (e.g. <https://webhook.site>) or use the `alert-echo` container.
 
 Create `grafana/provisioning/alerting/xrd-alert-rules.yaml`:
 
